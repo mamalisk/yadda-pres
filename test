@@ -1,0 +1,817 @@
+package.json -->
+{
+  "name": "evolve-acceptance-js",
+  "version": "0.1.0",
+  "description": "Evolve Acceptance Tests using Yadda & Webdriverio",
+  "private": true,
+  "dependencies": {
+    "angular-smart-table": "~2.0.2"
+  },
+  "devDependencies": {
+    "async": "*",
+    "chai": "~1.9.0",
+    "chainit": "~2.1.1",
+    "fs-extra": "^0.20.0",
+    "grunt": "^0.4.5",
+    "grunt-local-cdn": "^1.1.41",
+    "gulp": "~3.9.0",
+    "gulp-if": "*",
+    "gulp-mocha": "^2.1.1",
+    "gulp-open": "~0.3.2",
+    "gulp-run-sequence": "^0.3.2",
+    "gulp-util": "^3.0.5",
+    "gulp-yadda-steps": "*",
+    "gulp-zip": "^3.0.2",
+    "http-proxy": "^1.11.1",
+    "jsonfile": "~2.0.0",
+    "mkdirp": "^0.5.1",
+    "mocha": "~1.18.2",
+    "mocha-multi": "0.6.0",
+    "nconf": "~0.7.1",
+    "proxyquire": "^1.0.1",
+    "q": "~1.4.0",
+    "requirejs": "~2.1.17",
+    "rimraf": "^2.3.2",
+    "run-sequence": "^1.1.0",
+    "trim": "0.0.1",
+    "underscore": "1.8.2",
+    "webdriverio": "^2.4.5",
+    "winston": "~0.7.3",
+    "xunit-file": "~0.0.6",
+    "yadda": "^0.11.4",
+    "yadda-mocha-html-reporter": "0.0.3",
+    "yargs": "*"
+  },
+  "scripts": {
+    "test": "mocha -R spec --timeout 120000 regression.js",
+    "unit": "mocha -R spec unit_tests"
+  },
+  "engines": {
+
+    "node": ">=0.10.37"
+  }
+}
+<-- package.json
+
+gulp -->
+/* gulpfile.js */
+/* jshint node: true, browser: false */
+'use strict';
+
+var gulp = require('gulp'),
+    spawn = require('child_process').spawn,
+    exec = require('child_process').exec,
+    open = require('gulp-open'),
+    args = require('yargs').argv,
+    sequence = require('run-sequence').use(gulp),
+    gutil = require('gulp-util'),
+    rimraf = require('rimraf'),
+    os = require('os'),
+    dns = require('dns'),
+    trim = require('trim'),
+    mocha = require('gulp-mocha'),
+    fs = require('fs-extra'),
+    mkdirp = require('mkdirp'),
+    zip = require('gulp-zip'),
+    localCdn = require('grunt-local-cdn/lib/cdn'),
+    http = require('http'),
+    httpProxy = require('http-proxy');
+
+// TODO: This is hardcoded to execution-app, will need to be configuration based for other modules to use
+var moduleName = 'execution-app';
+// TODO: This should be read from somewhere like agenta-template.json
+var proxyToUrl = 'https://gbs00680.systems.uk.hsbc:7000';
+
+var server = {
+    host: 'localhost',
+    port: 23900,
+    instance: null
+};
+
+var cdnOptions = {
+    port: '55635',
+    repositoryDir: process.env['CDN_DIR'] || 'C:\\sandbox\\cdn',
+    verbose: true
+};
+var cdnUrl = 'http://localhost:' + cdnOptions.port;
+
+// String.startsWith polyfill (part of ECMAScript 6)
+if (!String.prototype.startsWith) {
+    String.prototype.startsWith = function (searchString, position) {
+        position = position || 0;
+        return this.indexOf(searchString, position) === position;
+    };
+}
+
+gulp.task('clean', function (cb) {
+    gutil.log('Removing screenshot png files');
+    rimraf('./reporter/*.png', function (err) {
+        if (err) {
+            return cb(err);
+        }
+        gutil.log('Removing dist folder');
+        rimraf('dist', cb);
+    });
+});
+
+gulp.task('create-reports-dir', function (cb) {
+    mkdirp('dist/reports', cb);
+});
+
+gulp.task('create-acceptance-reports-dir', function (cb) {
+    mkdirp('dist/reports/acceptance-reports', cb);
+});
+
+gulp.task('resolve-fqdn', function (cb) {
+    var networkInterfaces = os.networkInterfaces();
+    var ipAddress = networkInterfaces[Object.keys(networkInterfaces)[0]][0].address;
+    if (ipAddress === '127.0.0.1') {
+        ipAddress = networkInterfaces[Object.keys(networkInterfaces)[1]][0].address;
+    }
+
+    dns.reverse(ipAddress, function (err, hostnames) {
+        if (err) {
+            gutil.log(gutil.colors.red.bold('!!!!! Failed to resolve FQDN for IP Address ' + ipAddress + ' - ' + err));
+            server.host = ipAddress;
+            gutil.log(gutil.colors.red.bold('!!!!! Fallback to IP address - this may fail'))
+
+        } else {
+            server.host = hostnames[0];
+        }
+        if(server.host == "localhost.localdomain") {
+            server.host = 'localhost';
+        }
+        process.env['FQDN'] = server.host;
+        gutil.log('FQDN: "' + server.host + '"');
+        cb();
+    });
+});
+
+gulp.task('start-local-cdn', function (cb) {
+    if (process.env.BUILD_NUMBER) {
+        cdnOptions.overrides = moduleName + '=' + process.env.BUILD_NUMBER;
+        gutil.log('CDN overrides:', cdnOptions.overrides);
+    } else {
+        gutil.log('Not in CI build so no CDN overrides');
+    }
+    localCdn.start(cdnOptions, cb);
+});
+
+gulp.task('start-local-server', ['resolve-fqdn', 'start-local-cdn'], function (cb) {
+    var proxy = httpProxy.createProxyServer({});
+    proxy.on('error', function (e) {
+        gutil.log('Proxy error', gutil.colors.red.bold(e));
+    });
+    /*
+     proxy.on('proxyReq', function (proxyReq, req, res, options) {
+     gutil.log('-->: ', req.url);
+     });
+     */
+    proxy.on('proxyRes', function (proxyReq, req, res, options) {
+        if (res.statusCode != 200) {
+            gutil.log('Non-OK response', res.statusCode, 'for url', req.url);
+        }
+    });
+
+    var localUrl = 'http://' + server.host + ':' + server.port;
+
+    server.instance = http.createServer(function (req, res) {
+        var targetUrl = proxyToUrl;
+        if (req.url.startsWith('/modules/')) {
+            //gutil.log(gutil.colors.blue('Redirecting ' + req.url + ' to local CDN'));
+            targetUrl = cdnUrl;
+        } else if (req.url === '/evolve/config/env/localhost/localhost_' + server.port + '.js') {
+            //gutil.log(gutil.colors.blue('Redirecting ' + req.url + ' to /evolve/config.js/'));
+            req.url = '/evolve/config.js/';
+        }
+
+        proxy.web(req, res, {
+            target: targetUrl,
+            changeOrigin: true,
+            hostRewrite: true,
+            secure: false
+        });
+    });
+
+    server.instance.listen(server.port, function() {
+        gutil.log('Proxy', localUrl, '-->', proxyToUrl, 'and local CDN for modules -->', cdnUrl);
+        cb();
+    });
+});
+
+gulp.task('unit', function () {
+    return gulp.src('unit_tests/**/*', {read: false})
+        .pipe(mocha({reporter: 'spec'}));
+});
+
+gulp.task('regression', ['create-acceptance-reports-dir', 'start-local-server'], function (cb) {
+    executeTestsFor('regression.js', function(err){
+
+        if(err) throw err;
+        gutil.log(gutil.colors.green("All tests passed"));
+
+    });
+});
+
+gulp.task('regression-ext', ['create-acceptance-reports-dir', 'start-local-server'], function (cb) {
+    executeTestsFor('regression-ext.js', cb);
+});
+
+
+gulp.task('archive-test-reports', ['create-reports-dir'], function () {
+    return gulp.src('dist/reports/**/*')
+        .pipe(zip('test-reports.zip'))
+        .pipe(gulp.dest('dist'));
+});
+
+gulp.task('publish-test-reports', ['archive-test-reports'], function (cb) {
+    if (!process.env.BUILD_NUMBER) {
+        gutil.log('Not running in CI build - not publishing test reports');
+
+    } else {
+        gutil.log('Publishing test reports');
+
+        var mvnDeployFileCommand = 'mvn -B deploy:deploy-file' +
+            ' -DgroupId=com.hsbc.efx.uui.html.modules' +
+            ' -DartifactId=' + moduleName +
+            ' -Dversion=' + process.env.BUILD_NUMBER +
+            ' -DgeneratePom=false' +
+            ' -DrepositoryId=efx.nexus' +
+            ' -Durl=http://efx-nexus.systems.uk.hsbc:8081/nexus/content/repositories/releases/' +
+            ' -Dclassifier=test-reports' +
+            ' -Dfile=dist/test-reports.zip';
+        gutil.log(mvnDeployFileCommand);
+
+        exec(mvnDeployFileCommand, function (error, stdout, stderr) {
+
+            if (error) {
+                return cb(error);
+            }
+
+            gutil.log(gutil.colors.red(stderr));
+            gutil.log(stdout);
+        });
+    }
+});
+
+gulp.task('help', function (cb) {
+    var taskColor = gutil.colors.green.bold;
+    gutil.log(gutil.colors.blue.bgWhite.bold.underline('Evolve Automated Acceptance Tests'));
+    gutil.log('Commonly used tasks - for more see gulpfile.js');
+    gutil.log(taskColor('clean:               '), 'Removes report .png files');
+    gutil.log(taskColor('unit:                '), 'Runs unit tests');
+    gutil.log(taskColor('regression:          '), 'Runs regression tests after cleanup and starting selenium');
+    gutil.log(taskColor('regression-ext:      '), 'Runs regression ext tests after cleanup and starting selenium');
+    gutil.log(taskColor('smoke:               '), 'Runs smoke tests after cleanup and starting selenium');
+    cb();
+});
+
+function noop() {};
+
+// helper functions
+function executeTestsFor(executor, cb) {
+    if (args.feature) {
+        gutil.log('Feature is ' + args.feature);
+        executor = "--feature " + args.feature + " " + executor;
+    }
+    if (args.scenario) {
+        gutil.log('scenario is ' + args.scenario);
+        executor = "--scenario " + args.scenario + " " + executor;
+    }
+
+    if (args.local) {
+        gutil.log('running locally');
+        spawnChildProcess('standalone-selenium.bat', [], noop);
+    }
+
+    // TODO: FIXME: This is a total hack to override the url to use the local proxy server and CDN (gitignore entry added)
+    var agentaTemplateJson = require('./agenta-template.json');
+    agentaTemplateJson.baseUrl = 'http://' + server.host + ':' + server.port + '/evolve/';
+    gutil.log('Executing against: ' + agentaTemplateJson.baseUrl);
+    fs.writeFile('./agenta.json', JSON.stringify(agentaTemplateJson), function(err) {
+        if (err) {
+            cb(err);
+        }
+        else {
+            spawnChildProcess('node', ('node_modules/mocha/bin/mocha -R spec --timeout 200000 ' + executor).split(' '), function (err) {
+                    if(err) gutil.log(err);
+                    fs.copy('reporter', 'dist/reports/acceptance-reports', function() {
+                        if (server.instance) {
+                            gutil.log('Closing proxy');
+                            server.instance.close(cb);
+                            cb(err);
+                        } else {
+                            gutil.log('No proxy running to close');
+                            cb(err);
+                        }
+                    });
+
+
+            });
+        }
+
+    });
+}
+
+function spawnChildProcess(command, args, cb) {
+    var childProcess = spawn(command, args);
+
+    childProcess.stdout.on('data', function (data) {
+        gutil.log('[' + command + '] ' + trim.right('' + data));
+    });
+
+    childProcess.stderr.on('data', function (data) {
+        gutil.log(gutil.colors.blue('[' + command + '] ' + trim.right('' + data)));
+    });
+
+    childProcess.on('error', function (err) {
+        gutil.log(gutil.colors.red('[' + command + '] ' + trim.right('' + err)));
+        cb('error: ' + err);
+    });
+
+    childProcess.on('close', function (code) {
+        if (args.local) {
+            spawnChildProcess('Kill-selenium.bat', [], noop);
+        }
+        if (code !== 0) {
+            cb('[' + command + '] exited with code ' + code);
+        } else {
+            cb();
+        }
+    });
+
+    childProcess.on('exit', function(code){
+        if (code != 0) {
+            cb('[' + command + '] exited with code ' + code);
+        }
+    });
+}
+<-- gulp
+
+agent -->
+var buildProto = require('../buildProto'),
+    realPath   = require('../realPath.js');
+
+var Agent = function(){
+    var self = this;
+    console.log('Agent created');
+    this.memory = {};
+};
+
+Agent.prototype.extendWith = function(locations, base){
+    if(!base) base = __dirname;
+    buildProto(Agent.prototype,locations.map(realPath(base)));
+};
+
+Agent.prototype.withLogger = function(Logger){
+    this.Logger = Logger;
+    return this;
+};
+
+Agent.prototype.narrate =  function(message, level){
+    if(this.Logger) {
+        if(level) {
+            this.Logger.log(level, message);
+        }
+        else {
+            this.Logger.info(message);
+        }
+    }
+    else {
+        if(level) {
+            console.log('[' + level + '] ' + message);
+        }
+        else {
+            console.log(message);
+        }
+    }
+};
+
+Agent.prototype.remember = function(key, object) {
+    this.memory[key] = object;
+}
+
+Agent.prototype.recall = function(key) {
+    if(key in this.memory) {
+        console.log('found key: ' + key);
+        return this.memory[key];
+    } else {
+        throw Error('unknown key ' + key);
+    }
+}
+
+
+module.exports = Agent;
+<-- agent
+
+buildProto -->
+/* buildProto.js */
+module.exports = buildProto;
+
+function buildProto(proto, dirs) {
+    return dirs.reduce(extendProto, proto);
+}
+
+function extendProto(proto, dir) {
+    var fs = require('fs');
+    var realPath = require('./realPath.js');
+
+    return fs
+        .readdirSync(dir)
+        .map(realPath(dir))
+        .map(require)
+        .reduce(findFunction, proto);
+}
+
+function findFunction(proto, fn) {
+    proto[fn.name] = fn;
+    return proto;
+}
+
+<-- buildProto
+
+realPath -->
+/* real path */
+module.exports = function realPath(base) {
+    var path = require('path');
+
+    return function(file) {
+        return path.join(base, file);
+    };
+};
+<-- realPath
+
+screen -->
+v=var Screen = function (name, screenElementsArray, screensArray) {
+    this.self = this;
+    this.name = name;
+    this.url = "/";
+    if(screenElementsArray){
+        for(var i in screenElementsArray){
+            this[screenElementsArray[i].alias] = screenElementsArray[i];
+        }
+    }
+
+    if(screensArray) {
+        for (var j in screensArray) {
+            this[screensArray[j].name] = screensArray[j];
+        }
+    }
+};
+
+Screen.prototype.withScreenElement = function(screenElement) {
+    this[screenElement.alias] = screenElement;
+    return this;
+};
+
+Screen.prototype.withSubScreen = function(screen) {
+    this[screen.name] = screen;
+    return this;
+};
+
+Screen.prototype.element = function(screenAlias){
+    return this.screenElements[screenAlias];
+};
+
+Screen.prototype.subScreen = function(screenAlias){
+    return this[screenAlias];
+}
+
+
+Screen.prototype.withUrl = function(url) { this.url = url; return this; }
+
+
+module.exports = Screen;
+<-- screen
+
+screenElement -->
+'use strict';
+
+var ScreenElement = function(alias, locator){
+    this.locator = locator;
+    this.alias = alias;
+    this.defaultValue = "";
+}
+
+ScreenElement.prototype.withDefaultValue = function(defaultValue) { this.defaultValue = defaultValue; return this; }
+
+exports = module.exports = ScreenElement;
+<-- screenElement
+
+executor -->
+/* jslint node: true */
+/* global before, afterEach, after, featureFile, scenarios, steps */
+
+module.exports = function AgentaExecutor(featuresLocation, stepDefinitionsLocation, reportsOutputLocation, extendedMissionsLocations, configurationLocation) {
+
+    "use strict";
+    var Yadda = require('yadda');
+    Yadda.plugins.mocha.StepLevelPlugin.init();
+    var gutil = require('gulp-util');
+    var webdriver = require('webdriverio');
+    var library = require(stepDefinitionsLocation);
+    var AgentJS = require('./src/utils/agent/agent.js');
+    var winston = require('winston');
+
+    var scriptsHelper = require('./src/steps/webDriverExtensions.js');
+    var webDriver;
+    var context;
+    var agentaJs = new AgentJS();
+    var AgentConfiguration = require('./src/utils/config.js');
+    var config = new AgentConfiguration(configurationLocation).get();
+    var tools = config.get('tools');
+    var webDriverConfig = tools[0].config;
+    var _ = require('underscore');
+    var args = require('yargs').argv;
+
+    agentaJs.extendWith(['./src/missions/webdriver'], __dirname);
+    agentaJs.extendWith(extendedMissionsLocations, __dirname);
+
+    var YaddaHtml = require('./yadda-mocha-html-reporter');
+    // var YaddaHtml = require('yaddi');
+    var YaddaHtmlRep = new YaddaHtml(reportsOutputLocation);
+
+    var YaddaTeamcity = require('./yadda-teamcity-reporter.js'),
+        teamcityReporter = new YaddaTeamcity();
+
+
+    var foundFeatureFilesNumber = new Yadda.FeatureFileSearch(featuresLocation).list().length;
+
+    gutil.log(foundFeatureFilesNumber + ' feature files found');
+
+
+    new Yadda.FeatureFileSearch(featuresLocation).each(function (file) {
+
+
+        featureFile(file, function (feature) {
+            if(args.feature){
+                var featureToRun = args.feature;
+                if(featureToRun.indexOf('@') > -1) featureToRun = featureToRun.replace('@','');
+                if(!feature.annotations.hasOwnProperty(featureToRun)){
+                    return;
+                }
+            }
+            var featureToRun = feature;
+            YaddaHtmlRep.onFeature(featureToRun);
+
+            before(function (done) {
+                YaddaHtmlRep.onBefore();
+                teamcityReporter.onBefore();
+                if (!webDriver) {
+                    webDriver = webDriver || webdriver.remote(webDriverConfig);
+                    webDriver.init();
+                    webDriver.windowHandleSize({width: 1000, height: 800});
+                }
+                scriptsHelper.applyAll(webDriver);
+                agentaJs.setDriver(webDriver);
+                agentaJs.withLogger(winston);
+                context = {
+                    evolveFxUser: agentaJs,
+                    hasSwapsSwitchedOn : false
+                };
+                done();
+            });
+
+            beforeEach(function () {
+                YaddaHtmlRep.onBeforeEach();
+                teamcityReporter.onBeforeEach(this.currentTest);
+            });
+
+
+            var yadda = new Yadda.Yadda(library, context);
+            scenarios(feature.scenarios, function (scenario) {
+               if(args.scenario){
+                   var scenarioToRun = args.scenario;
+                   if(scenarioToRun.indexOf('@') > -1) scenarioToRun = scenarioToRun.replace('@','');
+                   if(!scenario.annotations.hasOwnProperty(scenarioToRun)){
+                       return;
+                   }
+               }
+                steps(scenario.steps, function (step, done) {
+                    YaddaHtmlRep.onStep(scenario);
+                    teamcityReporter.onStep(scenario);
+                    yadda.run(step, context, done);
+                });
+            });
+
+            afterEach(function () {
+                teamcityReporter.onAfterEach(this.currentTest);
+                takeScreenshotOnFailure(this.currentTest);
+                YaddaHtmlRep.onAfterEach(this.currentTest);
+            });
+
+            after(function (done) {
+                teamcityReporter.onAfter(featureToRun);
+                YaddaHtmlRep.onAfter(featureToRun);
+                if (YaddaHtmlRep.executedFeatures == foundFeatureFilesNumber) {
+                    gutil.log('killing browser');
+                    webDriver.end(done);
+                } else {
+                    done();
+                }
+            });
+
+        });
+    });
+
+
+    function takeScreenshotOnFailure(test) {
+        if (test.state != 'passed') {
+            agentaJs.narrate(test.title + ' failed', 'error');
+            var path = './reporter/' + test.title.replace(/\W+/g, '_').toLowerCase() + '.png';
+            YaddaHtmlRep.currentScenarioScreenshot = path;
+            webDriver.saveScreenshot(path);
+        } else {
+            agentaJs.narrate(test.title + ' passed', 'info');
+        }
+    }
+
+
+};
+<-- executor
+
+reporter -->
+var _ = require('underscore'),
+    gutil = require('gulp-util');
+
+var YaddaHtmlReporter = function(reportsOutputLocation){
+    this.featureFiles = {
+        features: [],
+        passedScenarios: 0,
+        failedScenarios: 0,
+        ignoredScenarios: 0
+    };
+
+    this.reportsOutputLocation = reportsOutputLocation;
+
+    this.totalScenarios = 0;
+    this.totalFeatures = 0;
+
+    this.currentScenarioName = "";
+    this.currentSteps = [];
+    this.currentStatus = "not_executed";
+    this.currentScenarioTags = [];
+    this.currentScenarioScreenshot = "";
+
+    this.executedFeatures = 0;
+};
+
+YaddaHtmlReporter.prototype.onFeature = function(feature){
+    this.reportingFeature = {
+        scenarios: [],
+        name : feature.title,
+        descriptionLines : feature.description,
+        status : 'not_executed',
+        tags : Object.keys(feature.annotations)
+    };
+    this.totalFeatures++;
+    this.totalScenarios += feature.scenarios.length;
+    //this.reportingFeature.name =  '' + feature.title;
+    //this.reportingFeature.descriptionLines = '' + feature.description;
+    //this.reportingFeature.status = "not_executed";
+    //this.reportingFeature.tags = Object.keys(feature.annotations);
+    this.executedScenarios = [];
+};
+
+YaddaHtmlReporter.prototype.onBefore = function(){
+    this.currentScenarioName = "";
+    this.currentSteps = [];
+    this.currentScenarioTags = [];
+    this.currentScenarioScreenshot = "";
+    this.executedScenarios = [];
+};
+
+YaddaHtmlReporter.prototype.onBeforeEach = function(){
+    if (this.currentStatus == 'failed') {
+        this.reportingFeature.status = 'failed';
+        this.featureFiles.failedScenarios++;
+        this.featureFiles.passedScenarios--;
+    }
+};
+
+YaddaHtmlReporter.prototype.onStep = function(scenario){
+    var foundScenario = _.find(this.executedScenarios, function (sc) {
+        return sc.name == scenario.title;
+    });
+    if (!foundScenario) {
+        this.executedScenarios.push({
+            name: scenario.title,
+            status: 'not_executed',
+            tags: Object.keys(scenario.annotations)
+        })
+    }
+    if (this.currentScenarioName != scenario.title) {
+        this.currentScenarioName = scenario.title;
+        this.currentStatus = "not_executed";
+        this.currentScenarioTags = Object.keys(scenario.annotations);
+    }
+};
+
+YaddaHtmlReporter.prototype.onAfterEach = function(currentTest){
+    this.currentStatus = currentTest.state;
+
+    if(currentTest.state == 'failed'){
+        this.error = currentTest.err.message;
+    }
+
+    var currentScenarioName = this.currentScenarioName;
+
+    var foundScenario = _.find(this.executedScenarios, function (scenario) {
+        return scenario.name == currentScenarioName;
+    });
+    if (foundScenario) {
+        var existingSteps = foundScenario.steps || [];
+        existingSteps.push({
+            name: currentTest.title,
+            status: currentTest.state
+        });
+        this.executedScenarios.pop();
+        this.executedScenarios.push({
+            name: this.currentScenarioName,
+            status: this.currentStatus,
+            tags: this.currentScenarioTags,
+            screenshot: this.currentScenarioScreenshot,
+            error: this.error,
+            steps: existingSteps
+        })
+    } else {
+        this.executedScenarios.push({
+            name: this.currentScenarioName,
+            status: this.currentStatus,
+            tags: this.currentScenarioTags,
+            screenshot: this.currentScenarioScreenshot,
+            error: this.error,
+            steps: [currentTest.title]
+        })
+    }
+
+    this.currentSteps.push({
+        name: currentTest.title,
+        status: currentTest.state
+    });
+};
+
+
+
+YaddaHtmlReporter.prototype.onAfter = function(feature){
+    this.executedFeatures++;
+
+    if (this.reportingFeature.status == 'passed' || this.reportingFeature.status == 'not_executed') {
+        this.reportingFeature.status = this.currentStatus;
+    }
+    this.reportingFeature.scenarios = this.executedScenarios;
+
+    var passed = _.filter(this.executedScenarios, function (scenario) {
+        return scenario.status == 'passed';
+    });
+
+    var failed = _.filter(this.executedScenarios, function (scenario) {
+        return scenario.status == 'failed';
+    });
+
+    var ignored = _.filter(this.executedScenarios, function (scenario) {
+        return scenario.status == 'not_executed' || scenario.status == 'ignored';
+    });
+
+    this.featureFiles.features.push({
+        name : feature.title,
+        status : this.reportingFeature.status,
+        tags : feature.annotations,
+        descriptionLines : feature.description,
+        scenarios : this.reportingFeature.scenarios
+    });
+
+    this.featureFiles.totalFeatures = this.totalFeatures;
+    this.featureFiles.totalScenarios = this.totalScenarios;
+
+    if (passed) {
+        this.featureFiles.passedScenarios += passed.length;
+    }
+    if (failed) {
+        this.featureFiles.failedScenarios += failed.length;
+    }
+    if (ignored) {
+        this.featureFiles.ignoredScenarios += ignored.length;
+    }
+
+    gutil.log('about to save report at ' + this.reportsOutputLocation);
+    require('fs-extra').writeJsonSync(this.reportsOutputLocation, this.featureFiles);
+    gutil.log('saved report');
+    var yaddaJsonFileContent = require('fs-extra').readJsonSync(this.reportsOutputLocation, {throws: false});
+    gutil.log(yaddaJsonFileContent);
+};
+
+YaddaHtmlReporter.prototype.yaddaToJson = function(file, features, cb){
+    require('jsonfile').writeFile(file, features, function(err){
+        if(err){
+            gutil.log(err);
+            return cb(err);
+        } else {
+            gutil.log('Successfully saved features in ' + file, 'info');
+            cb();
+        }
+    });
+};
+
+module.exports = YaddaHtmlReporter;
+<-- reporter
