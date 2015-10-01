@@ -7,7 +7,7 @@ function buildProto(proto, dirs) {
 
 function extendProto(proto, dir) {
     var fs = require('fs');
-    var realPath = require('./realPath.js');
+    var realPath = require('./real-path.js');
 
     return fs
         .readdirSync(dir)

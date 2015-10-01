@@ -9,13 +9,13 @@ module.exports = function Executor(featuresLocation, stepDefinitionsLocation, re
     var gutil = require('gulp-util');
     var webdriver = require('webdriverio');
     var library = require(stepDefinitionsLocation);
-    var AgentJS = require('../core/agent');
+    var Agent = require('../core/agent');
     var winston = require('winston');
 
     var scriptsHelper = require('./webdriver/extensions.js');
     var webDriver;
     var context;
-    var agentaJs = new AgentJS();
+    var agent = new Agent();
     var AgentConfiguration = require('./config.js');
     var config = new AgentConfiguration(configurationLocation).get();
     var tools = config.get('tools');
@@ -23,8 +23,8 @@ module.exports = function Executor(featuresLocation, stepDefinitionsLocation, re
     var _ = require('underscore');
     var args = require('yargs').argv;
 
-    agentaJs.extendWith(['./missions/webdriver'], __dirname);
-    agentaJs.extendWith(extendedMissionsLocations, __dirname);
+    agent.extendWith(['./missions/webdriver'], __dirname);
+    agent.extendWith(extendedMissionsLocations, __dirname);
 
     var YaddaHtml = require('./yadda-mocha-html-reporter');
     // var YaddaHtml = require('yaddi');
@@ -60,10 +60,10 @@ module.exports = function Executor(featuresLocation, stepDefinitionsLocation, re
                     webDriver.windowHandleSize({width: 1000, height: 800});
                 }
                 scriptsHelper.applyAll(webDriver);
-                agentaJs.setDriver(webDriver);
-                agentaJs.withLogger(winston);
+                agent.setDriver(webDriver);
+                agent.withLogger(winston);
                 context = {
-                    evolveFxUser: agentaJs,
+                    evolveFxUser: agent,
                     hasSwapsSwitchedOn : false
                 };
                 done();
@@ -110,12 +110,12 @@ module.exports = function Executor(featuresLocation, stepDefinitionsLocation, re
 
     function takeScreenshotOnFailure(test) {
         if (test.state != 'passed') {
-            agentaJs.narrate(test.title + ' failed', 'error');
+            agent.narrate(test.title + ' failed', 'error');
             var path = './reporter/' + test.title.replace(/\W+/g, '_').toLowerCase() + '.png';
             YaddaHtmlRep.currentScenarioScreenshot = path;
             webDriver.saveScreenshot(path);
         } else {
-            agentaJs.narrate(test.title + ' passed', 'info');
+            agent.narrate(test.title + ' passed', 'info');
         }
     }
 

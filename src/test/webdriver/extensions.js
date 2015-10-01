@@ -1,7 +1,6 @@
 'use strict';
 
-var async = require('async'),
-    page = require('../pages/evolve-shell-page.js');
+var async = require('async');
 
 module.exports.applyAll = function (webDriver){
 

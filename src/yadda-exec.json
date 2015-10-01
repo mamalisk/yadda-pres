@@ -1,0 +1,18 @@
+{
+  "tools": [
+    {
+      "name": "webdriver.io",
+      "location": "webdriver",
+      "config": {
+        "host": "localhost",
+        "port": 4444,
+        "desiredCapabilities": {
+          "browserName": "firefox"
+        },
+        "logLevel": "verbose"
+      }
+    }
+  ],
+  "baseUrl": "https://gbs00680.systems.uk.hsbc:7000/evolve/",
+  "externalUrl": "https://gbs00680.systems.uk.hsbc:7600/evolve/"
+}

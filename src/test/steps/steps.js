@@ -15,9 +15,9 @@ module.exports = (function(){
 	return require('./mixins')
 						.yadda([
 
-							'./navigationSteps',
-							'./actionSteps',
-							'./verificationSteps'
+							'./navigation',
+							'./action',
+							'./verification'
 
 						], dictionary);
 

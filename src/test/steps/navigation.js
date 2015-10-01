@@ -14,6 +14,7 @@ var navigation = function(library){
          })
 
         .define('my whildcard step', function(done){
+            
             done();
         })
 
