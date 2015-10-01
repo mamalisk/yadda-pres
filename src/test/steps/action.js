@@ -4,13 +4,12 @@ var action = function(library){
 
     this.dictionary
 
-        .when('I act in a specific way',function(done){
-            done();
+        .when('user performs registration',function(done){
+            this.agent.performRegistration(done);
          })
 
         .define('my whildcard action step', function(done){
-            
-            done();
+            this.agent.sing('lalala', done);
         })
 
         ;

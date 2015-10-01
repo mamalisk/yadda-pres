@@ -5,8 +5,11 @@ var navigation = function(library){
     this.dictionary
 
         .given(['I navigate to my homepage', 'I return to the main page'],function(done){
-
             done();
+         })
+
+        .given('I navigate to google',function(done){
+            this.agent.navigateToGoogle(done);
          })
 
         .given('I navigate to the help page',function(done){
@@ -15,7 +18,7 @@ var navigation = function(library){
 
         .define('my whildcard step', function(done){
             
-            done();
+            
         })
 
         ;

@@ -63,7 +63,7 @@ module.exports = function Executor(featuresLocation, stepDefinitionsLocation, re
                 agent.setDriver(webDriver);
                 agent.withLogger(winston);
                 context = {
-                    evolveFxUser: agent,
+                    agent: agent,
                     hasSwapsSwitchedOn : false
                 };
                 done();

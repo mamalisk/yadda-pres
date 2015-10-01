@@ -1,5 +1,4 @@
-module.exports = function sing(cb){
-	
-	console.log('lalalala!');
+module.exports = function sing(lyrics, cb){
+	console.log(lyrics);
 	cb();
 }

@@ -13,6 +13,6 @@
       }
     }
   ],
-  "baseUrl": "https://gbs00680.systems.uk.hsbc:7000/evolve/",
-  "externalUrl": "https://gbs00680.systems.uk.hsbc:7600/evolve/"
+  "baseUrl": "https://baseUrl:9090/",
+  "externalUrl": "https://externalUrl:9000/app/"
 }
